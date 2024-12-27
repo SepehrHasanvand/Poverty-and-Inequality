@@ -1,0 +1,187 @@
+---
+title: "Development Economics I - Project 2"
+author: "Sepehr Hasanvand"
+date: "`r Sys.Date()`"
+output:
+    html_document:
+        theme: readable    
+        highlight: kate
+        toc: true    
+        toc_depth: 4
+        toc_float: true    
+        df_print: paged
+        code_folding: hide    
+        css: styles.css
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(cache = TRUE)
+```
+
+Required libraries
+
+```{r, results='asis',message=FALSE}
+library(readxl)
+library(dplyr)
+library(purrr)
+library(ggplot2)
+library(stargazer)
+library(tidyverse)
+library(RODBC)
+library(tibble)
+```
+
+Importing HEIS data:
+```{r}
+db <- odbcDriverConnect("Driver={Microsoft Access Driver (*.mdb, *.accdb)};
+                        DBQ=D:/Masters student/Term 3/Dev/Project 2/Data/raw data1401_2/raw data1401/HB1401_14020611.mdb")
+#Importing tables
+# List of suffixes for the table names
+suffixes_data <- c("Data", "P1", "P2")
+suffixes_expenditure <- paste0("P3S", c("01", "02", "03", "04", "05", "06", "07", "08", "09", "11", "12"))
+suffixes_income <- paste0("P4S", c("01", "02", "03", "04"))
+
+# Function to load data into a tibble
+load_data <- function(table_name) {
+  as_tibble(sqlFetch(db, table_name, rownames = TRUE))
+}
+
+# Load the data for rural and urban datasets
+for (suffix in c(suffixes_data, suffixes_expenditure, suffixes_income)) {
+  assign(paste0("R1401", suffix), load_data(paste0("R1401", suffix)))
+  assign(paste0("U1401", suffix), load_data(paste0("U1401", suffix)))
+}
+
+
+```
+Data Cleaning
+```{r}
+# Combining urban and rural data
+suffixes <- c(
+  "Data", "P1", "P2", "P3S01", "P3S02", "P3S03", "P3S04", "P3S05", "P3S06", "P3S07", "P3S08", 
+  "P3S09", "P3S11", "P3S12", "P4S01", "P4S02", "P4S03", "P4S04"
+)
+
+# Loop to create and merge tables
+for (suffix in suffixes) {
+  # Create table names for R, U, and T
+  R_name <- paste0("R1401", suffix)
+  U_name <- paste0("U1401", suffix)
+  T_name <- paste0("T1401", suffix)
+  # Merge tables and store the result in T
+  assign(T_name, rbind(get(R_name), get(U_name)))
+}
+# Removing extra data frames
+rm(list = ls(pattern = "^[RU]1401"))
+
+# Dropping and merging
+T1401Data <- T1401Data %>%
+  select(Address,weight)
+T1401Data <- merge(T1401Data, T1401P1, by = "Address", all = TRUE)
+
+# making Province variable and renaming
+T1401Data <- T1401Data %>% 
+   mutate(Province = substr(Address, 2, 3),
+          Urban=substr(Address,1,1)) %>% 
+  rename(Radif=DYCOL01,
+         Nesbat=DYCOL03,
+         Gender=DYCOL04,
+         Age=DYCOL05,
+         Savad=DYCOL06,
+         Tahsil=DYCOL07,
+         Madrak=DYCOL08,
+         Faaliat=DYCOL09,
+         Marriage=DYCOL10)
+  T1401P1 <- T1401P1 %>% 
+    select(Address,DYCOL03) %>% 
+    rename(Nesbat=DYCOL03)
+
+T1401P3S01 <- merge(T1401Data, T1401P3S01, by = "Address", all = TRUE)
+
+
+
+# Labeling Values
+T1401P3S01 <- T1401P3S01 %>% 
+  rename(Code_Kala = DYCOL01,
+         Tahie = DYCOL02,
+         Meghdar_G = DYCOL03,
+         Meghdar_KG = DYCOL04,
+         Price = DYCOL05,
+         Arzesh = DYCOL06) %>%
+  mutate(Code_Kala = as.character(Code_Kala), 
+         Code_Kala = case_when(
+           Code_Kala %in% c("11141", "11142", "11143", "11144") ~ "Nan",
+           Code_Kala %in% c("11111", "11112", "11113", "11114", "11115", 
+                            "11116", "11117", "11118") ~ "Bereng",
+           Code_Kala == "11164" ~ "Macaroni",
+           Code_Kala == "11731" ~ "SibZamini",
+           Code_Kala %in% c("11211", "11212", "11213") ~ "Goosht_GH",
+           Code_Kala %in% c("11231", "11232") ~ "Goosht_Sefid",
+           Code_Kala == "11768" ~ "Adas",
+           Code_Kala %in% c("11411", "11412") ~ "Shir",
+           Code_Kala %in% c("11425", "11426") ~ "Mast",
+           Code_Kala %in% c("11441", "11442") ~ "Tokhm_Morgh",
+           Code_Kala %in% c("11428", "11429") ~ "Panir",
+           Code_Kala %in% c("11611", "11612", "11613", "11614", "11615", 
+                            "11616", "11617", "11618", "11619", 
+                            "11621", "11622", "11623", "11624", "11625", 
+                            "11631", "11632", "11633", "11634", "11635", 
+                            "11641", "11642", "11643") ~ "Miveh",
+           Code_Kala %in% c("11711", "11712", "11713", "11714", "11715") ~ "Sabzi_Barg_Sabz",
+           Code_Kala %in% c("11741", "11742", "11735") ~ "Digar_Sabzi_ha",
+           Code_Kala == "11812" ~ "Shekar",
+           Code_Kala == "11533" ~ "Roghan",
+           TRUE ~ Code_Kala 
+         )) %>%
+  mutate(i_weight = case_when(
+    Nesbat == 1 ~ 1,
+    Age > 18 & Nesbat != 1 ~ 0.8,
+    Age <= 18 & Nesbat != 1 ~ 0.5
+  ))
+
+
+# Create a lookup vector (data frame) mapping Code_Kala to the corresponding needs_kg values
+needs_lookup <- tibble(
+  Code_Kala = c("Nan", "Bereng", "Macaroni", "SibZamini", "Adas", "Shir", "Mast",
+                "Goosht_GH", "Goosht_Sefid", "Tokhm_Morgh", "Panir", "Miveh",
+                "Sabzi_Barg_Sabz", "Digar_Sabzi_ha", "Roghan", "Shekar"),
+  needs_kg = c(8, 3, 0.7, 1.5, 0.6, 7, 3, 1.2, 1.5, 0.7, 0.45, 9, 9, 4.5, 0.9, 1)
+)
+
+# Process the data frame and create new variables
+price <- T1401P3S01 %>%
+  group_by(Code_Kala, Province, Address,Urban,weight) %>%
+  mutate(
+    total_arzesh = sum(Arzesh * i_weight, na.rm = TRUE),
+    total_meghdar = sum(Meghdar_KG * i_weight, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    price_index = if_else(total_meghdar == 0, NA_real_, total_arzesh / total_meghdar)
+  ) %>%
+  select(Address, Code_Kala, Province, price_index,Urban,weight) %>%
+  filter(!is.na(as.numeric(Code_Kala)) == FALSE) %>%
+  left_join(needs_lookup, by = "Code_Kala") %>% 
+  mutate(Arzesh_Kala=price_index * needs_kg*weight)
+
+Poverty_line <- price %>%
+  group_by(Code_Kala, Urban) %>% 
+  summarize(mean_Arzesh = mean(Arzesh_Kala, na.rm = TRUE), .groups = "drop") %>% 
+  group_by(Urban) %>% 
+   summarize(Poverty_line = mean(mean_Arzesh, na.rm = TRUE), .groups = "drop")
+
+ 
+
+
+```
+
+```{r}
+
+```
+
+
