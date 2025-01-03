@@ -34,6 +34,12 @@ library(stargazer)
 library(tidyverse)
 library(RODBC)
 library(tibble)
+library(knitr)
+library(ineq)
+
+library(shiny)
+library(leaflet)
+library(sf)
 ```
 
 Importing HEIS data:
@@ -101,6 +107,24 @@ T1401Data <- T1401Data %>%
     select(Address,DYCOL03) %>% 
     rename(Nesbat=DYCOL03)
 
+# Map province codes to province names
+Province <- c(Markazi = "00", Ardabil = "24", Bushehr = "18", `Chaharmahal and Bakhtiari` = "14",
+  `East Azerbaijan` = "03", Fars = "07", Gilan = "01", Golestan = "27",
+  Hamadan = "13", Hormozgan = "22", Ilam = "16", Isfahan = "10",
+  Kerman = "08", Kermanshah = "05", Khuzestan = "06", `Kohgiluyeh and Boyer-Ahmad` = "17",
+  Kurdistan = "12", Lorestan = "15", Alborz = "30", Mazandaran = "02",
+  `North Khorasan` = "28", Qazvin = "26", Qom = "25", `Razavi Khorasan` = "09",
+  Semnan = "20", `Sistan and Baluchestan` = "11", `South Khorasan` = "29", Tehran = "23",
+  `West Azerbaijan` = "04", Yazd = "21", Zanjan = "19")
+
+# Correct the code to map the "province" from "Address"
+T1401Data <- T1401Data %>% 
+  mutate(province = fct_recode(as.factor(substr(Address, 2, 3)), !!!Province))
+
+# View the modified data frame (optional)
+  
+  
+  
 T1401P3S01 <- merge(T1401Data, T1401P3S01, by = "Address", all = TRUE)
 
 
@@ -144,6 +168,15 @@ T1401P3S01 <- T1401P3S01 %>%
     Age <= 18 & Nesbat != 1 ~ 0.5
   ))
 
+# تبدیل NA به صفر
+T1401P3S01 <- T1401P3S01 %>%
+  mutate(
+    Meghdar_G = if_else(is.na(Meghdar_G), 0, Meghdar_G),
+    Meghdar_KG = if_else(is.na(Meghdar_KG), 0, Meghdar_KG)
+  ) %>%
+  # تبدیل گرم به کیلوگرم و جمع کردن مقادیر
+  mutate(Meghdar_KG = Meghdar_KG + Meghdar_G / 1000)
+
 
 # Create a lookup vector (data frame) mapping Code_Kala to the corresponding needs_kg values
 needs_lookup <- tibble(
@@ -155,15 +188,13 @@ needs_lookup <- tibble(
 
 # Process the data frame and create new variables
 price <- T1401P3S01 %>%
-  group_by(Code_Kala, Province, Address,Urban,weight) %>%
+  group_by(Code_Kala) %>%
   mutate(
-    total_arzesh = sum(Arzesh * i_weight, na.rm = TRUE),
-    total_meghdar = sum(Meghdar_KG * i_weight, na.rm = TRUE)
+    price_index = sum(Arzesh * i_weight, na.rm = TRUE) / 
+                  sum(Meghdar_KG * i_weight, na.rm = TRUE)
   ) %>%
-  ungroup() %>%
-  mutate(
-    price_index = if_else(total_meghdar == 0, NA_real_, total_arzesh / total_meghdar)
-  ) %>%
+  mutate(price_index = if_else(is.nan(price_index) | is.infinite(price_index), NA_real_, price_index)) %>%
+  ungroup()%>%
   select(Address, Code_Kala, Province, price_index,Urban,weight) %>%
   filter(!is.na(as.numeric(Code_Kala)) == FALSE) %>%
   left_join(needs_lookup, by = "Code_Kala") %>% 
@@ -172,16 +203,147 @@ price <- T1401P3S01 %>%
 Poverty_line <- price %>%
   group_by(Code_Kala, Urban) %>% 
   summarize(mean_Arzesh = mean(Arzesh_Kala, na.rm = TRUE), .groups = "drop") %>% 
+    ungroup()%>%
   group_by(Urban) %>% 
-   summarize(Poverty_line = mean(mean_Arzesh, na.rm = TRUE), .groups = "drop")
-
- 
+  summarize(Poverty_line = mean(mean_Arzesh, na.rm = TRUE), .groups = "drop")
 
 
+kable(Poverty_line, 
+      format = "html",
+      caption = "Poverty line")
+
+```
+Part II:
+Inequality
+
+2.1:
+```{r}
+Welfare <- read.csv("D:/Masters student/Term 3/Dev/Project 2/Data/nemone_2_darsadi_1402/nemone_2_darsadi_1402.csv")
 ```
 
 ```{r}
+Welfare <- Welfare %>%
+  mutate(proxy = CardPerMonth_1402*12 + Daramad)
 
+gini=Gini(Welfare$proxy)
+
+cat("Gini Coefficient using welfare data:", gini, "\n")
 ```
 
+
+```{r}
+Income <- T1401P4S01 %>% 
+  select(Address, DYCOL15) %>% 
+  rename(Mozd=DYCOL15)
+
+Income <- Income %>%
+  left_join(T1401P4S02 %>% select(Address, DYCOL15), by = "Address") %>% 
+  rename(Azad=DYCOL15) %>% 
+    left_join(T1401P4S03 %>% select(-DYCOL01), by = "Address") %>% 
+    mutate(Mothefareghe= DYCOL03+DYCOL04+DYCOL05+DYCOL06+DYCOL07+DYCOL08) %>% 
+  select(Address,Mozd,Azad,Mothefareghe) %>% 
+        left_join(T1401P4S04 %>% select(Address,Dycol05), by = "Address") %>% 
+  rename(other=Dycol05) %>% 
+      left_join(T1401Data %>% select(Address), by = "Address") %>% 
+  mutate(Income=Mozd+Azad+Mothefareghe+other) %>% 
+      left_join(T1401Data %>% select(Address,province), by = "Address")
+
+gini_HEIS=Gini(Income$Income)
+
+cat("Gini Coefficient using HEIS data:", gini_HEIS, "\n")
+```
+Top 1% Share of Income of HEIS data
+```{r}
+top_1_percent <- Income %>%
+  arrange(desc(Income)) %>% 
+  slice_head(prop = 0.01) %>%   # انتخاب یک درصد بالای داده‌ها
+  summarise(sum_top_1_percent = sum(Income, na.rm = TRUE))
+
+# محاسبه مجموع کل Income
+total_income <- sum(Income$Income, na.rm = TRUE)
+
+# محاسبه نسبت
+ratio <- top_1_percent$sum_top_1_percent / total_income
+
+# نمایش نتیجه
+print(paste("Ratio of top 1% income to total income:", ratio))
+```
+```{r}
+top_1_percent_welfare <- Welfare %>% 
+  arrange(desc(proxy)) %>% 
+  slice_head(prop = 0.01) %>%   # انتخاب یک درصد بالای داده‌ها
+  summarise(sum_top_1_percent_w= sum(proxy, na.rm = TRUE))
+
+# محاسبه مجموع کل Income
+total_income_Welfare <- sum(Welfare$proxy, na.rm = TRUE)
+
+# محاسبه نسبت
+ratio_welfare <- top_1_percent_welfare$sum_top_1_percent_w / total_income_Welfare
+
+# نمایش نتیجه
+print(paste("Ratio of top 1% income to total income of Welfare Data:", ratio_welfare))
+  
+```
+
+2.2:
+
+Since we have used a proxy for income in the welfare data but actual income in the HEIS data, the income values for individuals differ between the two datasets. Additionally, the samples in these two datasets are different, meaning that we do not have a common sample from the population. As a result, the Gini coefficient and the top 1% income share may differ between the two datasets.
+
+################################################
+Part III:
+Calculating gini coefficient for all of the provinces in Welfare Data
+```{r}
+compute_gini <- function(x) {
+  return(Gini(x))  
+}
+
+gini_by_province_Welfare <- Welfare %>%
+  group_by(SabteAhval_provincename) %>%
+  summarise(gini_coefficient = compute_gini(proxy), .groups = "drop") %>% 
+  rename(province_farsi=SabteAhval_provincename)
+
+print(gini_by_province_Welfare)
+```
+Calculating gini coefficient for all of the provinces in Heis Data
+```{r}
+compute_gini <- function(x) {
+  return(Gini(x))
+}
+
+
+gini_by_province <- Income %>%
+  group_by(province) %>%
+  summarise(gini_coefficient = compute_gini(Income), .groups = "drop")
+
+print(gini_by_province)
+```
+
+
+```{r warning=FALSE}
+provinces_map <- st_read("C:/Users/sepehr/Downloads/Mapping/Mapping/iranmap/irn_admbnda_adm1_unhcr_20190514.shp")
+provinces_map <- provinces_map %>% 
+  rename(province=ADM1_EN)
+
+provinces_map_HEIS <- merge(provinces_map, gini_by_province, by = "province")
+
+ggplot(data = provinces_map_HEIS) +
+  geom_sf(aes(fill = gini_coefficient)) +  
+  scale_fill_viridis_c(option = "C") +
+  theme_minimal() +
+  labs(title = "Map of Iran", fill = "Gini Coeffient by HEIS Data")
+```
+```{r}
+gini_by_province_Welfare <- gini_by_province_Welfare[-1, ]
+ provinces_map <- provinces_map %>% 
+  rename(province_farsi=ADM1_FA)
+
+provinces_map_welfare <- merge(provinces_map, gini_by_province_Welfare, by = "province_farsi")
+
+
+ggplot(data = provinces_map_welfare) +
+  geom_sf(aes(fill = gini_coefficient)) +  
+  scale_fill_viridis_c(option = "C") +
+  theme_minimal() +
+  labs(title = "Map of Iran", fill = "Gini Coeffient by Welfare Data")
+```
 
